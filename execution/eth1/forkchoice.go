@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/erigontech/erigon-db/rawdb"
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/dbg"
 	"github.com/erigontech/erigon-lib/common/metrics"
@@ -33,7 +34,6 @@ import (
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/state"
 	"github.com/erigontech/erigon-lib/wrap"
-	"github.com/erigontech/erigon/core/rawdb"
 	"github.com/erigontech/erigon/eth/consensuschain"
 	"github.com/erigontech/erigon/eth/stagedsync"
 	"github.com/erigontech/erigon/eth/stagedsync/stages"
@@ -43,7 +43,7 @@ import (
 // This is the range in which we sanity check and potentially fix the canonical chain if it is broken.
 // a broken canonical chain is very dangerous, as it can lead to a situation where the RPC and snapshots break down.
 // better to have an hack than to regenerate all chains.
-const fixCanonicalFailsafeRange = 512
+const fixCanonicalFailsafeRange = 16
 
 const startPruneFrom = 1024
 
@@ -74,7 +74,7 @@ func sendForkchoiceErrorWithoutWaiting(logger log.Logger, ch chan forkchoiceOutc
 	}
 }
 
-func isDomainAheadOfBlocks(tx kv.RwTx, logger log.Logger) bool {
+func isDomainAheadOfBlocks(tx kv.TemporalRwTx, logger log.Logger) bool {
 	doms, err := state.NewSharedDomains(tx, logger)
 	if err != nil {
 		logger.Debug("domain ahead of blocks", "err", err)
@@ -202,12 +202,7 @@ func writeForkChoiceHashes(tx kv.RwTx, blockHash, safeHash, finalizedHash common
 }
 
 func minUnwindableBlock(tx kv.Tx, number uint64) (uint64, error) {
-	casted, ok := tx.(state.HasAggTx)
-	if !ok {
-		return 0, errors.New("tx does not support state.HasAggTx")
-	}
-	return casted.AggTx().(*state.AggregatorRoTx).CanUnwindToBlockNum(tx)
-
+	return state.AggTx(tx).CanUnwindToBlockNum(tx)
 }
 
 func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, originalBlockHash, safeHash, finalizedHash common.Hash, outcomeCh chan forkchoiceOutcome) {
@@ -235,7 +230,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 		hash   common.Hash
 		number uint64
 	}
-	tx, err := e.db.BeginRwNosync(ctx)
+	tx, err := e.db.BeginTemporalRw(ctx)
 	if err != nil {
 		sendForkchoiceErrorWithoutWaiting(e.logger, outcomeCh, err, false)
 		return
@@ -379,7 +374,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 			return
 		}
 		// Run the unwind
-		if err := e.executionPipeline.RunUnwind(e.db, wrap.TxContainer{Tx: tx}); err != nil {
+		if err := e.executionPipeline.RunUnwind(e.db, wrap.NewTxContainer(tx, nil)); err != nil {
 			err = fmt.Errorf("updateForkChoice: %w", err)
 			sendForkchoiceErrorWithoutWaiting(e.logger, outcomeCh, err, false)
 			return
@@ -480,7 +475,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 	// Run the forkchoice
 	initialCycle := limitedBigJump
 	firstCycle := false
-	if _, err := e.executionPipeline.Run(e.db, wrap.TxContainer{Tx: tx}, initialCycle, firstCycle); err != nil {
+	if _, err := e.executionPipeline.Run(e.db, wrap.NewTxContainer(tx, nil), initialCycle, firstCycle); err != nil {
 		err = fmt.Errorf("updateForkChoice: %w", err)
 		e.logger.Warn("Cannot update chain head", "hash", blockHash, "err", err)
 		sendForkchoiceErrorWithoutWaiting(e.logger, outcomeCh, err, stateFlushingInParallel)
@@ -529,6 +524,10 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 			return
 		}
 		commitStart := time.Now()
+		txnum, err := rawdbv3.TxNums.Max(tx, fcuHeader.Number.Uint64())
+		if err != nil {
+			e.logger.Warn("Failed to get txnum", "err", err)
+		}
 		if err := tx.Commit(); err != nil {
 			sendForkchoiceErrorWithoutWaiting(e.logger, outcomeCh, err, stateFlushingInParallel)
 			return
@@ -555,7 +554,7 @@ func (e *EthereumExecutionModule) updateForkChoice(ctx context.Context, original
 		var m runtime.MemStats
 		dbg.ReadMemStats(&m)
 		blockTimings := e.forkValidator.GetTimings(blockHash)
-		logArgs := []interface{}{"hash", blockHash, "number", fcuHeader.Number.Uint64(), "age", common.PrettyAge(time.Unix(int64(fcuHeader.Time), 0))}
+		logArgs := []interface{}{"hash", blockHash, "number", fcuHeader.Number.Uint64(), "txnum", txnum, "age", common.PrettyAge(time.Unix(int64(fcuHeader.Time), 0))}
 		if flushExtendingFork {
 			totalTime := blockTimings[engine_helpers.BlockTimingsValidationIndex]
 			if !e.syncCfg.ParallelStateFlushing {
