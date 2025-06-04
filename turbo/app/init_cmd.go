@@ -19,6 +19,7 @@ package app
 import (
 	"encoding/json"
 	"os"
+	"runtime/pprof"
 
 	"github.com/urfave/cli/v2"
 
@@ -76,6 +77,13 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err := json.NewDecoder(file).Decode(genesis); err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
+	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
+		pprof.Lookup("allocs").WriteTo(allocFile, 0)
+		allocFile.Close()
+		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
+	}
+	// DEBUG: just test json decode to save time
+	return nil
 
 	// Open and initialise both full and light databases
 	stack, err := MakeNodeWithDefaultConfig(cliCtx, logger)
