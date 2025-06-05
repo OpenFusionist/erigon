@@ -117,14 +117,14 @@ func initGenesis(cliCtx *cli.Context) error {
 			utils.Fatalf("invalid genesis file: %v", err)
 		}
 	}
-	// TODO:DEBUG:record final allocation profile
-	// if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
-	// 	pprof.Lookup("allocs").WriteTo(allocFile, 0)
-	// 	allocFile.Close()
-	// 	logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
-	// }
-	// //TODO: just test json decode to save time
-	// return nil
+	// TODO:DEBUG:record heap profile
+	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
+		pprof.Lookup("heap").WriteTo(allocFile, 0)
+		allocFile.Close()
+		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
+	}
+	//TODO: just test json decode to save time
+	return nil
 
 	// Open and initialise both full and light databases
 	stack, err := MakeNodeWithDefaultConfig(cliCtx, logger)
@@ -319,13 +319,6 @@ func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger
 		}
 
 		alloc[addr] = account
-
-		// TODO:Force garbage collection periodically to keep memory usage low during large genesis parsing
-		if len(alloc)%1000000 == 0 {
-			logger.Info("Processed accounts", "count", len(alloc))
-			// Uncomment the line below if memory usage is still too high
-			// runtime.GC()
-		}
 	}
 
 	// Expect closing brace
@@ -385,6 +378,61 @@ func parseBigInt(s string) *big.Int {
 	return bigint
 }
 
+// parseGenesisStorageStreaming
+func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash]common.Hash, logger log.Logger) error {
+	// Expect opening brace
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("expected '{' for storage object, got %v", token)
+	}
+
+	// Process each key-value pair in the storage object
+	for decoder.More() {
+		// Read key
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		keyStr, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("expected string key for storage, got %T", token)
+		}
+
+		// Parse key as common.Hash
+		key := common.HexToHash(keyStr)
+
+		// Read value
+		token, err = decoder.Token()
+		if err != nil {
+			return err
+		}
+		valueStr, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("expected string value for storage, got %T", token)
+		}
+
+		// Parse value as common.Hash
+		value := common.HexToHash(valueStr)
+
+		// Store in map
+		storage[key] = value
+	}
+
+	// Expect closing brace
+	token, err = decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '}' {
+		return fmt.Errorf("expected '}' for storage object, got %v", token)
+	}
+
+	return nil
+}
+
 // parseGenesisAccountStreaming parses a GenesisAccount manually to avoid reflection
 func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (types.GenesisAccount, error) {
 	// Expect opening brace
@@ -399,10 +447,8 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 	}
 
 	var account types.GenesisAccount
-
 	// Process each field in the account object
 	for decoder.More() {
-		// Read field name
 		token, err := decoder.Token()
 		if err != nil {
 			logger.Error("Error reading field name token", "error", err)
@@ -472,9 +518,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 				account.Storage = make(map[common.Hash]common.Hash)
 			}
 
-			// Directly decode to account.Storage to avoid intermediate allocations
-			// common.Hash implements json.Unmarshaler, so JSON decoder can handle it directly
-			if err := decoder.Decode(&account.Storage); err != nil {
+			if err := parseGenesisStorageStreaming(decoder, account.Storage, logger); err != nil {
 				logger.Error("Failed to decode storage field", "error", err)
 				return types.GenesisAccount{}, fmt.Errorf("failed to decode storage: %w", err)
 			}
