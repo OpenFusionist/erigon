@@ -98,14 +98,6 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err != nil {
 		utils.Fatalf("Failed to stat genesis file: %v", err)
 	}
-	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
-		pprof.Lookup("heap").WriteTo(allocFile, 0)
-		allocFile.Close()
-		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
-	}
-	// DEBUG: just test json decode to save time
-	return nil
-
 	// Use streaming for files larger than 100MB
 	if fileInfo.Size() > 100*1024*1024 {
 		logger.Info("Using streaming JSON parser for large genesis file", "size", fileInfo.Size())
@@ -464,37 +456,20 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 		// Handle each field
 		switch fieldName {
 		case "balance":
-			var balance interface{}
+			var balance string
 			if err := decoder.Decode(&balance); err != nil {
 				logger.Error("Failed to decode balance field", "error", err)
 				return types.GenesisAccount{}, fmt.Errorf("failed to decode balance: %w", err)
 			}
-			// Handle both string and number formats
-			switch v := balance.(type) {
-			case string:
-				account.Balance = parseBigInt(v)
-			case float64:
-				account.Balance = big.NewInt(int64(v))
-			default:
-				logger.Error("Unexpected balance type", "type", fmt.Sprintf("%T", v), "value", v)
-				return types.GenesisAccount{}, fmt.Errorf("unexpected balance type: %T", v)
-			}
+			account.Balance = parseBigInt(balance)
 
 		case "nonce":
-			var nonce interface{}
+			var nonce string
 			if err := decoder.Decode(&nonce); err != nil {
 				logger.Error("Failed to decode nonce field", "error", err)
 				return types.GenesisAccount{}, fmt.Errorf("failed to decode nonce: %w", err)
 			}
-			// Handle both string and number formats
-			switch v := nonce.(type) {
-			case string:
-				account.Nonce = parseUint64(v)
-			case float64:
-				account.Nonce = uint64(v)
-			default:
-				account.Nonce = 0 // Default to 0 if not provided or invalid
-			}
+			account.Nonce = parseUint64(nonce)
 
 		case "code":
 			var code string
