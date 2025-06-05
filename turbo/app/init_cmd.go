@@ -59,6 +59,9 @@ participating.
 It expects the genesis file as argument.`,
 }
 
+// Generic function type for streaming parser handlers
+type JSONEntryHandler func(key string, decoder *json.Decoder, logger log.Logger) error
+
 // initGenesis will initialise the given JSON format genesis file and writes it as
 // the zero'd block (i.e. genesis) or will fail hard if it can't succeed.
 func initGenesis(cliCtx *cli.Context) error {
@@ -101,7 +104,7 @@ func initGenesis(cliCtx *cli.Context) error {
 	// Use streaming for files larger than 100MB
 	if fileInfo.Size() > 100*1024*1024 {
 		logger.Info("Using streaming JSON parser for large genesis file", "size", fileInfo.Size())
-		if err := decodeGenesisStreaming(file, genesis, logger); err != nil {
+		if err := parseGenesisStreaming(file, genesis, logger); err != nil {
 			utils.Fatalf("invalid genesis file: %v", err)
 		}
 	} else {
@@ -151,41 +154,16 @@ func initGenesis(cliCtx *cli.Context) error {
 	return nil
 }
 
-// decodeGenesisStreaming decodes a large genesis file using streaming to reduce memory usage
-func decodeGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logger) error {
+// parseGenesisStreaming decodes a large genesis file using streaming to reduce memory usage
+func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logger) error {
 	// Create a buffered reader for efficient reading
 	bufReader := bufio.NewReaderSize(r, 1024*1024) // 1MB buffer
 
-	// First, we need to parse the JSON structure to extract non-alloc fields
-	// and locate the alloc section
 	decoder := json.NewDecoder(bufReader)
-
-	// Initialize genesis with empty alloc
 	genesis.Alloc = make(types.GenesisAlloc)
 
-	// Parse the root object
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '{' {
-		return fmt.Errorf("expected '{' at start of genesis file")
-	}
-
-	// Process each field in the genesis object
-	for decoder.More() {
-		// Read field name
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-
-		fieldName, ok := token.(string)
-		if !ok {
-			return fmt.Errorf("expected field name, got %T", token)
-		}
-
-		// Handle each field
+	// Create field handler for genesis object
+	genesisFieldHandler := func(fieldName string, decoder *json.Decoder, logger log.Logger) error {
 		switch fieldName {
 		case "config":
 			var config chain.Config
@@ -263,44 +241,16 @@ func decodeGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logg
 				return fmt.Errorf("failed to skip field %s: %w", fieldName, err)
 			}
 		}
+		return nil
 	}
 
-	// Expect closing brace
-	token, err = decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '}' {
-		return fmt.Errorf("expected '}' at end of genesis file")
-	}
-
-	return nil
+	return parseJSONObjectMapStreaming(decoder, genesisFieldHandler, logger, "genesis file")
 }
 
 // parseAllocStreaming parses the alloc section of genesis file entry by entry
 func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger log.Logger) error {
-	// Expect opening brace
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '{' {
-		return fmt.Errorf("expected '{' for alloc section, got %v", token)
-	}
-
-	// Process each account entry
-	for decoder.More() {
-		// Read the address (key)
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-
-		addrStr, ok := token.(string)
-		if !ok {
-			return fmt.Errorf("expected string address, got %T", token)
-		}
-
+	// Create entry handler for alloc map
+	allocEntryHandler := func(addrStr string, decoder *json.Decoder, logger log.Logger) error {
 		// Parse address
 		addr := common.HexToAddress(addrStr)
 
@@ -311,18 +261,10 @@ func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger
 		}
 
 		alloc[addr] = account
+		return nil
 	}
 
-	// Expect closing brace
-	token, err = decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '}' {
-		return fmt.Errorf("expected '}' for alloc section, got %v", token)
-	}
-
-	return nil
+	return parseJSONObjectMapStreaming(decoder, allocEntryHandler, logger, "alloc section")
 }
 
 func has0xPrefix(str string) bool {
@@ -372,32 +314,13 @@ func parseBigInt(s string) *big.Int {
 
 // parseGenesisStorageStreaming
 func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash]common.Hash, logger log.Logger) error {
-	// Expect opening brace
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '{' {
-		return fmt.Errorf("expected '{' for storage object, got %v", token)
-	}
-
-	// Process each key-value pair in the storage object
-	for decoder.More() {
-		// Read key
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		keyStr, ok := token.(string)
-		if !ok {
-			return fmt.Errorf("expected string key for storage, got %T", token)
-		}
-
+	// Create entry handler for storage map
+	storageEntryHandler := func(keyStr string, decoder *json.Decoder, logger log.Logger) error {
 		// Parse key as common.Hash
 		key := common.HexToHash(keyStr)
 
 		// Read value
-		token, err = decoder.Token()
+		token, err := decoder.Token()
 		if err != nil {
 			return err
 		}
@@ -411,55 +334,24 @@ func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash
 
 		// Store in map
 		storage[key] = value
+		return nil
 	}
 
-	// Expect closing brace
-	token, err = decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '}' {
-		return fmt.Errorf("expected '}' for storage object, got %v", token)
-	}
-
-	return nil
+	return parseJSONObjectMapStreaming(decoder, storageEntryHandler, logger, "storage object")
 }
 
 // parseGenesisAccountStreaming parses a GenesisAccount manually to avoid reflection
 func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (types.GenesisAccount, error) {
-	// Expect opening brace
-	token, err := decoder.Token()
-	if err != nil {
-		logger.Error("Error reading opening brace for account", "error", err)
-		return types.GenesisAccount{}, err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '{' {
-		logger.Error("Expected '{' for account", "got", token)
-		return types.GenesisAccount{}, fmt.Errorf("expected '{' for account, got %v", token)
-	}
-
 	var account types.GenesisAccount
-	// Process each field in the account object
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			logger.Error("Error reading field name token", "error", err)
-			return types.GenesisAccount{}, err
-		}
 
-		fieldName, ok := token.(string)
-		if !ok {
-			logger.Error("Expected field name", "got_type", fmt.Sprintf("%T", token), "value", token)
-			return types.GenesisAccount{}, fmt.Errorf("expected field name, got %T", token)
-		}
-
-		// Handle each field
+	// Create field handler for account object
+	accountFieldHandler := func(fieldName string, decoder *json.Decoder, logger log.Logger) error {
 		switch fieldName {
 		case "balance":
 			var balance string
 			if err := decoder.Decode(&balance); err != nil {
 				logger.Error("Failed to decode balance field", "error", err)
-				return types.GenesisAccount{}, fmt.Errorf("failed to decode balance: %w", err)
+				return fmt.Errorf("failed to decode balance: %w", err)
 			}
 			account.Balance = parseBigInt(balance)
 
@@ -467,7 +359,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 			var nonce string
 			if err := decoder.Decode(&nonce); err != nil {
 				logger.Error("Failed to decode nonce field", "error", err)
-				return types.GenesisAccount{}, fmt.Errorf("failed to decode nonce: %w", err)
+				return fmt.Errorf("failed to decode nonce: %w", err)
 			}
 			account.Nonce = parseUint64(nonce)
 
@@ -475,7 +367,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 			var code string
 			if err := decoder.Decode(&code); err != nil {
 				logger.Error("Failed to decode code field", "error", err)
-				return types.GenesisAccount{}, fmt.Errorf("failed to decode code: %w", err)
+				return fmt.Errorf("failed to decode code: %w", err)
 			}
 			account.Code = common.FromHex(code)
 
@@ -483,7 +375,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 			var constructor string
 			if err := decoder.Decode(&constructor); err != nil {
 				logger.Error("Failed to decode constructor field", "error", err)
-				return types.GenesisAccount{}, fmt.Errorf("failed to decode constructor: %w", err)
+				return fmt.Errorf("failed to decode constructor: %w", err)
 			}
 			account.Constructor = common.FromHex(constructor)
 
@@ -495,7 +387,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 
 			if err := parseGenesisStorageStreaming(decoder, account.Storage, logger); err != nil {
 				logger.Error("Failed to decode storage field", "error", err)
-				return types.GenesisAccount{}, fmt.Errorf("failed to decode storage: %w", err)
+				return fmt.Errorf("failed to decode storage: %w", err)
 			}
 
 		default:
@@ -503,21 +395,54 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 			var skip json.RawMessage
 			if err := decoder.Decode(&skip); err != nil {
 				logger.Error("Failed to skip unknown field", "field", fieldName, "error", err)
-				return types.GenesisAccount{}, fmt.Errorf("failed to skip field %s: %w", fieldName, err)
+				return fmt.Errorf("failed to skip field %s: %w", fieldName, err)
 			}
+		}
+		return nil
+	}
+
+	err := parseJSONObjectMapStreaming(decoder, accountFieldHandler, logger, "account")
+	return account, err
+}
+
+// parseJSONObjectMapStreaming parses a JSON object/map and calls the handler for each key-value pair
+func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler, logger log.Logger, contextType string) error {
+	// Expect opening brace
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("expected '{' for %s, got %v", contextType, token)
+	}
+
+	// Process each entry
+	for decoder.More() {
+		// Read the key (field name for objects, key for maps)
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+
+		key, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("expected string key for %s, got %T", contextType, token)
+		}
+
+		// Handle the entry using the provided handler
+		if err := handler(key, decoder, logger); err != nil {
+			return err
 		}
 	}
 
 	// Expect closing brace
 	token, err = decoder.Token()
 	if err != nil {
-		logger.Error("Error reading closing brace for account", "error", err)
-		return types.GenesisAccount{}, err
+		return err
 	}
 	if delim, ok := token.(json.Delim); !ok || delim != '}' {
-		logger.Error("Expected '}' for account", "got", token)
-		return types.GenesisAccount{}, fmt.Errorf("expected '}' for account, got %v", token)
+		return fmt.Errorf("expected '}' for %s, got %v", contextType, token)
 	}
 
-	return account, nil
+	return nil
 }
