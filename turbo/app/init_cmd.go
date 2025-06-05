@@ -21,16 +21,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"os"
 	"runtime/pprof"
-	"strconv"
 
 	"github.com/urfave/cli/v2"
 
 	"github.com/erigontech/erigon-lib/chain"
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/datadir"
+	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/types"
@@ -177,7 +176,7 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 			if err := decoder.Decode(&nonce); err != nil {
 				return fmt.Errorf("failed to decode nonce: %w", err)
 			}
-			genesis.Nonce = parseUint64(nonce)
+			genesis.Nonce = math.MustParseUint64(nonce)
 
 		case "timestamp":
 			var timestamp uint64
@@ -198,14 +197,14 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 			if err := decoder.Decode(&gasLimit); err != nil {
 				return fmt.Errorf("failed to decode gasLimit: %w", err)
 			}
-			genesis.GasLimit = parseUint64(gasLimit)
+			genesis.GasLimit = math.MustParseUint64(gasLimit)
 
 		case "difficulty":
 			var difficulty string
 			if err := decoder.Decode(&difficulty); err != nil {
 				return fmt.Errorf("failed to decode difficulty: %w", err)
 			}
-			genesis.Difficulty = parseBigInt(difficulty)
+			genesis.Difficulty = math.MustParseBig256(difficulty)
 
 		case "mixHash":
 			var mixHash string
@@ -271,47 +270,6 @@ func has0xPrefix(str string) bool {
 	return len(str) >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')
 }
 
-// Helper functions for parsing hex values
-func parseUint64(s string) uint64 {
-	if s == "" {
-		return 0
-	}
-
-	// Use the same logic as math.ParseUint64
-	if len(s) >= 2 && (s[:2] == "0x" || s[:2] == "0X") {
-		v, err := strconv.ParseUint(s[2:], 16, 64)
-		if err != nil {
-			return 0
-		}
-		return v
-	}
-
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return v
-}
-
-func parseBigInt(s string) *big.Int {
-	if s == "" {
-		return new(big.Int)
-	}
-
-	// Use the same logic as math.ParseBig256
-	var bigint *big.Int
-	var ok bool
-	if len(s) >= 2 && (s[:2] == "0x" || s[:2] == "0X") {
-		bigint, ok = new(big.Int).SetString(s[2:], 16)
-	} else {
-		bigint, ok = new(big.Int).SetString(s, 10)
-	}
-	if !ok {
-		return big.NewInt(0)
-	}
-	return bigint
-}
-
 // parseGenesisStorageStreaming
 func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash]common.Hash, logger log.Logger) error {
 	// Create entry handler for storage map
@@ -353,7 +311,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 				logger.Error("Failed to decode balance field", "error", err)
 				return fmt.Errorf("failed to decode balance: %w", err)
 			}
-			account.Balance = parseBigInt(balance)
+			account.Balance = math.MustParseBig256(balance)
 
 		case "nonce":
 			var nonce string
@@ -361,7 +319,7 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 				logger.Error("Failed to decode nonce field", "error", err)
 				return fmt.Errorf("failed to decode nonce: %w", err)
 			}
-			account.Nonce = parseUint64(nonce)
+			account.Nonce = math.MustParseUint64(nonce)
 
 		case "code":
 			var code string
@@ -418,7 +376,6 @@ func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler
 
 	// Process each entry
 	for decoder.More() {
-		// Read the key (field name for objects, key for maps)
 		token, err := decoder.Token()
 		if err != nil {
 			return err
@@ -428,8 +385,6 @@ func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler
 		if !ok {
 			return fmt.Errorf("expected string key for %s, got %T", contextType, token)
 		}
-
-		// Handle the entry using the provided handler
 		if err := handler(key, decoder, logger); err != nil {
 			return err
 		}
