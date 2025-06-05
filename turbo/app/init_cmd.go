@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"runtime/pprof"
 
 	"github.com/urfave/cli/v2"
@@ -39,6 +40,12 @@ import (
 	"github.com/erigontech/erigon/node"
 	"github.com/erigontech/erigon/turbo/debug"
 )
+
+func init() {
+	// sample for  allocs
+	runtime.MemProfileRate = 1
+	runtime.MemProfileRate = 4096
+}
 
 var initCommand = cli.Command{
 	Action:    MigrateFlags(initGenesis),
@@ -113,7 +120,7 @@ func initGenesis(cliCtx *cli.Context) error {
 	}
 	// TODO:DEBUG:record heap profile
 	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
-		pprof.Lookup("heap").WriteTo(allocFile, 0)
+		pprof.Lookup("allocs").WriteTo(allocFile, 0)
 		allocFile.Close()
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
