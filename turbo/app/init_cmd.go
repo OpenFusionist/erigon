@@ -78,7 +78,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
 	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
-		pprof.Lookup("allocs").WriteTo(allocFile, 0)
+		pprof.Lookup("heap").WriteTo(allocFile, 0)
 		allocFile.Close()
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
