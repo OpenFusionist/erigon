@@ -273,10 +273,6 @@ func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger
 	return parseJSONObjectMapStreaming(decoder, allocEntryHandler, logger, "alloc section")
 }
 
-func has0xPrefix(str string) bool {
-	return len(str) >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')
-}
-
 // parseGenesisStorageStreaming
 func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash]common.Hash, logger log.Logger) error {
 	// Create entry handler for storage map
@@ -284,14 +280,9 @@ func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash
 		// Parse key as common.Hash
 		key := common.HexToHash(keyStr)
 
-		// Read value
-		token, err := decoder.Token()
-		if err != nil {
+		var valueStr string
+		if err := decoder.Decode(&valueStr); err != nil {
 			return err
-		}
-		valueStr, ok := token.(string)
-		if !ok {
-			return fmt.Errorf("expected string value for storage, got %T", token)
 		}
 
 		// Parse value as common.Hash
