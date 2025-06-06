@@ -19,6 +19,7 @@ package app
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"runtime/pprof"
 
 	"github.com/urfave/cli/v2"
@@ -33,6 +34,12 @@ import (
 	"github.com/erigontech/erigon/node"
 	"github.com/erigontech/erigon/turbo/debug"
 )
+
+func init() {
+	// sample for  allocs
+	runtime.MemProfileRate = 1
+	runtime.MemProfileRate = 4096
+}
 
 var initCommand = cli.Command{
 	Action:    MigrateFlags(initGenesis),
