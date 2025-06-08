@@ -108,15 +108,9 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("Failed to stat genesis file: %v", err)
 	}
 	// Use streaming for files larger than 100MB
-	if fileInfo.Size() > 100*1024*1024 {
-		logger.Info("Using streaming JSON parser for large genesis file", "size", fileInfo.Size())
-		if err := parseGenesisStreaming(file, genesis, logger); err != nil {
-			utils.Fatalf("invalid genesis file: %v", err)
-		}
-	} else {
-		if err := json.NewDecoder(file).Decode(genesis); err != nil {
-			utils.Fatalf("invalid genesis file: %v", err)
-		}
+	logger.Info("Using streaming JSON parser for large genesis file", "size", fileInfo.Size())
+	if err := parseGenesisStreaming(file, genesis, logger); err != nil {
+		utils.Fatalf("invalid genesis file: %v", err)
 	}
 	// TODO:DEBUG:record heap profile
 	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
@@ -213,7 +207,7 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 			}
 			genesis.Difficulty = math.MustParseBig256(difficulty)
 
-		case "mixHash":
+		case "mixhash":
 			var mixHash string
 			if err := decoder.Decode(&mixHash); err != nil {
 				return fmt.Errorf("failed to decode mixHash: %w", err)
@@ -236,12 +230,15 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 
 		case "alloc":
 			// Parse the alloc section with streaming
+			logger.Info("Starting alloc section parsing")
 			if err := parseAllocStreaming(decoder, genesis.Alloc, logger); err != nil {
 				return fmt.Errorf("failed to parse alloc: %w", err)
 			}
+			logger.Info("Completed alloc section parsing", "addresses", len(genesis.Alloc))
 
 		default:
 			// Skip unknown fields
+			logger.Debug("Skipping unknown genesis field", "field", fieldName)
 			var skip json.RawMessage
 			if err := decoder.Decode(&skip); err != nil {
 				return fmt.Errorf("failed to skip field %s: %w", fieldName, err)
@@ -263,7 +260,8 @@ func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger
 		// Parse the account manually to avoid reflection
 		account, err := parseGenesisAccountStreaming(decoder, logger)
 		if err != nil {
-			return err
+			logger.Error("Failed to parse genesis account", "address", addrStr, "error", err)
+			return fmt.Errorf("failed to parse account for address %s: %w", addrStr, err)
 		}
 
 		alloc[addr] = account
@@ -280,9 +278,13 @@ func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash
 		// Parse key as common.Hash
 		key := common.HexToHash(keyStr)
 
-		var valueStr string
-		if err := decoder.Decode(&valueStr); err != nil {
+		token, err := decoder.Token()
+		if err != nil {
 			return err
+		}
+		valueStr, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("expected string for storage value, got %T", token)
 		}
 
 		// Parse value as common.Hash
@@ -304,34 +306,54 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 	accountFieldHandler := func(fieldName string, decoder *json.Decoder, logger log.Logger) error {
 		switch fieldName {
 		case "balance":
-			var balance string
-			if err := decoder.Decode(&balance); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				logger.Error("Failed to decode balance field", "error", err)
 				return fmt.Errorf("failed to decode balance: %w", err)
+			}
+			balance, ok := token.(string)
+			if !ok {
+				logger.Error("Expected string for balance field", "got", token)
+				return fmt.Errorf("expected string for balance, got %T", token)
 			}
 			account.Balance = math.MustParseBig256(balance)
 
 		case "nonce":
-			var nonce string
-			if err := decoder.Decode(&nonce); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				logger.Error("Failed to decode nonce field", "error", err)
 				return fmt.Errorf("failed to decode nonce: %w", err)
+			}
+			nonce, ok := token.(string)
+			if !ok {
+				logger.Error("Expected string for nonce field", "got", token)
+				return fmt.Errorf("expected string for nonce, got %T", token)
 			}
 			account.Nonce = math.MustParseUint64(nonce)
 
 		case "code":
-			var code string
-			if err := decoder.Decode(&code); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				logger.Error("Failed to decode code field", "error", err)
 				return fmt.Errorf("failed to decode code: %w", err)
+			}
+			code, ok := token.(string)
+			if !ok {
+				logger.Error("Expected string for code field", "got", token)
+				return fmt.Errorf("expected string for code, got %T", token)
 			}
 			account.Code = common.FromHex(code)
 
 		case "constructor":
-			var constructor string
-			if err := decoder.Decode(&constructor); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				logger.Error("Failed to decode constructor field", "error", err)
 				return fmt.Errorf("failed to decode constructor: %w", err)
+			}
+			constructor, ok := token.(string)
+			if !ok {
+				logger.Error("Expected string for constructor field", "got", token)
+				return fmt.Errorf("expected string for constructor, got %T", token)
 			}
 			account.Constructor = common.FromHex(constructor)
 
@@ -366,36 +388,47 @@ func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler
 	// Expect opening brace
 	token, err := decoder.Token()
 	if err != nil {
-		return err
+		logger.Error("Failed to read opening token", "context", contextType, "error", err)
+		return fmt.Errorf("failed to read opening token for %s: %w", contextType, err)
 	}
 	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		logger.Error("Expected opening brace", "context", contextType, "got", token)
 		return fmt.Errorf("expected '{' for %s, got %v", contextType, token)
 	}
 
 	// Process each entry
+	entryCount := 0
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
-			return err
+			logger.Error("Failed to read key token", "context", contextType, "entry", entryCount, "error", err)
+			return fmt.Errorf("failed to read key token for %s at entry %d: %w", contextType, entryCount, err)
 		}
 
 		key, ok := token.(string)
 		if !ok {
-			return fmt.Errorf("expected string key for %s, got %T", contextType, token)
+			logger.Error("Expected string key", "context", contextType, "entry", entryCount, "got", token)
+			return fmt.Errorf("expected string key for %s at entry %d, got %T", contextType, entryCount, token)
 		}
+
+		// Call handler with proper error context
 		if err := handler(key, decoder, logger); err != nil {
 			return err
 		}
+		entryCount++
 	}
 
 	// Expect closing brace
 	token, err = decoder.Token()
 	if err != nil {
-		return err
+		logger.Error("Failed to read closing token", "context", contextType, "entries", entryCount, "error", err)
+		return fmt.Errorf("failed to read closing token for %s after %d entries: %w", contextType, entryCount, err)
 	}
 	if delim, ok := token.(json.Delim); !ok || delim != '}' {
-		return fmt.Errorf("expected '}' for %s, got %v", contextType, token)
+		logger.Error("Expected closing brace", "context", contextType, "entries", entryCount, "got", token)
+		return fmt.Errorf("expected '}' for %s after %d entries, got %v", contextType, entryCount, token)
 	}
 
+	// logger.Info("Completed JSON object parsing", "context", contextType, "totalEntries", entryCount)
 	return nil
 }
