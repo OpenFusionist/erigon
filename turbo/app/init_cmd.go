@@ -21,6 +21,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"time"
 
 	"github.com/urfave/cli/v2"
 
@@ -33,6 +34,9 @@ import (
 	"github.com/erigontech/erigon/eth/tracers"
 	"github.com/erigontech/erigon/node"
 	"github.com/erigontech/erigon/turbo/debug"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 func init() {
@@ -68,6 +72,11 @@ func initGenesis(cliCtx *cli.Context) error {
 	if logger, tracer, _, _, err = debug.Setup(cliCtx, true /* rootLogger */); err != nil {
 		return err
 	}
+
+	go func() {
+		logger.Info("Starting pprof on :6060")
+		http.ListenAndServe("localhost:6060", nil) // 本地访问，安全性较好
+	}()
 	// Make sure we have a valid genesis JSON
 	genesisPath := cliCtx.Args().First()
 	if len(genesisPath) == 0 {
@@ -90,6 +99,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
 	// DEBUG: just test json decode to save time
+	time.Sleep(5 * time.Minute)
 	return nil
 
 	// Open and initialise both full and light databases
