@@ -45,12 +45,6 @@ import (
 	_ "net/http/pprof"
 )
 
-func init() {
-	// sample for  allocs
-	runtime.MemProfileRate = 1
-	runtime.MemProfileRate = 4096
-}
-
 var initCommand = cli.Command{
 	Action:    MigrateFlags(initGenesis),
 	Name:      "init",
@@ -75,6 +69,8 @@ type JSONEntryHandler func(key string, decoder *json.Decoder, logger log.Logger)
 // initGenesis will initialise the given JSON format genesis file and writes it as
 // the zero'd block (i.e. genesis) or will fail hard if it can't succeed.
 func initGenesis(cliCtx *cli.Context) error {
+
+	runtime.MemProfileRate = 64 // default is 512, change to 64 to sample more frequently
 
 	var logger log.Logger
 	var tracer *tracers.Tracer
