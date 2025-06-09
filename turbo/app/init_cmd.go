@@ -173,58 +173,90 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 			genesis.Config = &config
 
 		case "nonce":
-			var nonce string
-			if err := decoder.Decode(&nonce); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode nonce: %w", err)
+			}
+			nonce, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for nonce, got %T", token)
 			}
 			genesis.Nonce = math.MustParseUint64(nonce)
 
 		case "timestamp":
-			var timestamp uint64
-			if err := decoder.Decode(&timestamp); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode timestamp: %w", err)
 			}
-			genesis.Timestamp = timestamp
+			timestamp, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for timestamp, got %T", token)
+			}
+			genesis.Timestamp = math.MustParseUint64(timestamp)
 
 		case "extraData":
-			var extraData string
-			if err := decoder.Decode(&extraData); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode extraData: %w", err)
+			}
+			extraData, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for extraData, got %T", token)
 			}
 			genesis.ExtraData = common.FromHex(extraData)
 
 		case "gasLimit":
-			var gasLimit string
-			if err := decoder.Decode(&gasLimit); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode gasLimit: %w", err)
+			}
+			gasLimit, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for gasLimit, got %T", token)
 			}
 			genesis.GasLimit = math.MustParseUint64(gasLimit)
 
 		case "difficulty":
-			var difficulty string
-			if err := decoder.Decode(&difficulty); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode difficulty: %w", err)
+			}
+			difficulty, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for difficulty, got %T", token)
 			}
 			genesis.Difficulty = math.MustParseBig256(difficulty)
 
 		case "mixhash":
-			var mixHash string
-			if err := decoder.Decode(&mixHash); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode mixHash: %w", err)
+			}
+			mixHash, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for mixHash, got %T", token)
 			}
 			genesis.Mixhash = common.HexToHash(mixHash)
 
 		case "coinbase":
-			var coinbase string
-			if err := decoder.Decode(&coinbase); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode coinbase: %w", err)
+			}
+			coinbase, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for coinbase, got %T", token)
 			}
 			genesis.Coinbase = common.HexToAddress(coinbase)
 
 		case "parentHash":
-			var parentHash string
-			if err := decoder.Decode(&parentHash); err != nil {
+			token, err := decoder.Token()
+			if err != nil {
 				return fmt.Errorf("failed to decode parentHash: %w", err)
+			}
+			parentHash, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("expected string for parentHash, got %T", token)
 			}
 			genesis.ParentHash = common.HexToHash(parentHash)
 
@@ -399,7 +431,7 @@ func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler
 	// Process each entry
 	entryCount := 0
 	for decoder.More() {
-		token, err := decoder.Token()
+		token, err = decoder.Token()
 		if err != nil {
 			logger.Error("Failed to read key token", "context", contextType, "entry", entryCount, "error", err)
 			return fmt.Errorf("failed to read key token for %s at entry %d: %w", contextType, entryCount, err)
@@ -412,7 +444,7 @@ func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler
 		}
 
 		// Call handler with proper error context
-		if err := handler(key, decoder, logger); err != nil {
+		if err = handler(key, decoder, logger); err != nil {
 			return err
 		}
 		entryCount++
