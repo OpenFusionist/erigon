@@ -120,7 +120,6 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("Failed to write genesis block: %v", err)
 	}
 	chaindb.Close()
-
 	logger.Info("Successfully wrote genesis state", "hash", hash.Hash())
 	return nil
 }
@@ -157,11 +156,11 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 			if err != nil {
 				return fmt.Errorf("failed to decode timestamp: %w", err)
 			}
-			timestamp, ok := token.(string)
+			timestamp, ok := token.(float64)
 			if !ok {
-				return fmt.Errorf("expected string for timestamp, got %T", token)
+				return fmt.Errorf("expected float64 for timestamp, got %T", token)
 			}
-			genesis.Timestamp = math.MustParseUint64(timestamp)
+			genesis.Timestamp = uint64(timestamp)
 
 		case "extraData":
 			token, err := decoder.Token()
