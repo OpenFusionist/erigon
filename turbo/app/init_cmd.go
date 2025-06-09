@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
-	"runtime/pprof"
 
 	"github.com/urfave/cli/v2"
 
@@ -40,12 +38,6 @@ import (
 	"github.com/erigontech/erigon/node"
 	"github.com/erigontech/erigon/turbo/debug"
 )
-
-func init() {
-	// sample for  allocs
-	runtime.MemProfileRate = 1
-	runtime.MemProfileRate = 4096
-}
 
 var initCommand = cli.Command{
 	Action:    MigrateFlags(initGenesis),
@@ -71,20 +63,9 @@ type JSONEntryHandler func(key string, decoder *json.Decoder, logger log.Logger)
 // initGenesis will initialise the given JSON format genesis file and writes it as
 // the zero'd block (i.e. genesis) or will fail hard if it can't succeed.
 func initGenesis(cliCtx *cli.Context) error {
-	// CPU profiling
-	cpuFile, err := os.Create("initgenesis_cpu.prof")
-	if err != nil {
-		return err
-	}
-	defer cpuFile.Close()
-
-	if err := pprof.StartCPUProfile(cpuFile); err != nil {
-		return err
-	}
-	defer pprof.StopCPUProfile()
-
 	var logger log.Logger
 	var tracer *tracers.Tracer
+	var err error
 	if logger, tracer, _, _, err = debug.Setup(cliCtx, true /* rootLogger */); err != nil {
 		return err
 	}
@@ -108,18 +89,14 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("Failed to stat genesis file: %v", err)
 	}
 	// Use streaming for files larger than 100MB
-	logger.Info("Using streaming JSON parser for large genesis file", "size", fileInfo.Size())
-	if err := parseGenesisStreaming(file, genesis, logger); err != nil {
+	if fileInfo.Size() > 100*1024*1024 {
+		logger.Info("Using streaming JSON parser for large genesis file", "size", fileInfo.Size())
+		if err := parseGenesisStreaming(file, genesis, logger); err != nil {
+			utils.Fatalf("invalid genesis file: %v", err)
+		}
+	} else if err = json.NewDecoder(file).Decode(genesis); err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
-	// TODO:DEBUG:record heap profile
-	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
-		pprof.Lookup("allocs").WriteTo(allocFile, 0)
-		allocFile.Close()
-		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
-	}
-	//TODO: just test json decode to save time
-	return nil
 
 	// Open and initialise both full and light databases
 	stack, err := MakeNodeWithDefaultConfig(cliCtx, logger)
@@ -144,21 +121,13 @@ func initGenesis(cliCtx *cli.Context) error {
 	}
 	chaindb.Close()
 
-	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
-		pprof.Lookup("allocs").WriteTo(allocFile, 0)
-		allocFile.Close()
-		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
-	}
-
 	logger.Info("Successfully wrote genesis state", "hash", hash.Hash())
 	return nil
 }
 
 // parseGenesisStreaming decodes a large genesis file using streaming to reduce memory usage
 func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logger) error {
-	// Create a buffered reader for efficient reading
 	bufReader := bufio.NewReaderSize(r, 1024*1024) // 1MB buffer
-
 	decoder := json.NewDecoder(bufReader)
 	genesis.Alloc = make(types.GenesisAlloc)
 
@@ -284,12 +253,8 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 
 // parseAllocStreaming parses the alloc section of genesis file entry by entry
 func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger log.Logger) error {
-	// Create entry handler for alloc map
 	allocEntryHandler := func(addrStr string, decoder *json.Decoder, logger log.Logger) error {
-		// Parse address
 		addr := common.HexToAddress(addrStr)
-
-		// Parse the account manually to avoid reflection
 		account, err := parseGenesisAccountStreaming(decoder, logger)
 		if err != nil {
 			logger.Error("Failed to parse genesis account", "address", addrStr, "error", err)
@@ -303,13 +268,10 @@ func parseAllocStreaming(decoder *json.Decoder, alloc types.GenesisAlloc, logger
 	return parseJSONObjectMapStreaming(decoder, allocEntryHandler, logger, "alloc section")
 }
 
-// parseGenesisStorageStreaming
+// parseGenesisStorageStreaming parses the storage section of genesis file entry by entry
 func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash]common.Hash, logger log.Logger) error {
-	// Create entry handler for storage map
 	storageEntryHandler := func(keyStr string, decoder *json.Decoder, logger log.Logger) error {
-		// Parse key as common.Hash
 		key := common.HexToHash(keyStr)
-
 		token, err := decoder.Token()
 		if err != nil {
 			return err
@@ -318,11 +280,7 @@ func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash
 		if !ok {
 			return fmt.Errorf("expected string for storage value, got %T", token)
 		}
-
-		// Parse value as common.Hash
 		value := common.HexToHash(valueStr)
-
-		// Store in map
 		storage[key] = value
 		return nil
 	}
@@ -330,11 +288,9 @@ func parseGenesisStorageStreaming(decoder *json.Decoder, storage map[common.Hash
 	return parseJSONObjectMapStreaming(decoder, storageEntryHandler, logger, "storage object")
 }
 
-// parseGenesisAccountStreaming parses a GenesisAccount manually to avoid reflection
+// parseGenesisAccountStreaming parses a GenesisAccount streaming
 func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (types.GenesisAccount, error) {
 	var account types.GenesisAccount
-
-	// Create field handler for account object
 	accountFieldHandler := func(fieldName string, decoder *json.Decoder, logger log.Logger) error {
 		switch fieldName {
 		case "balance":
@@ -390,7 +346,6 @@ func parseGenesisAccountStreaming(decoder *json.Decoder, logger log.Logger) (typ
 			account.Constructor = common.FromHex(constructor)
 
 		case "storage":
-			// Initialize storage if needed
 			if account.Storage == nil {
 				account.Storage = make(map[common.Hash]common.Hash)
 			}
@@ -427,40 +382,35 @@ func parseJSONObjectMapStreaming(decoder *json.Decoder, handler JSONEntryHandler
 		logger.Error("Expected opening brace", "context", contextType, "got", token)
 		return fmt.Errorf("expected '{' for %s, got %v", contextType, token)
 	}
-
-	// Process each entry
-	entryCount := 0
 	for decoder.More() {
 		token, err = decoder.Token()
 		if err != nil {
-			logger.Error("Failed to read key token", "context", contextType, "entry", entryCount, "error", err)
-			return fmt.Errorf("failed to read key token for %s at entry %d: %w", contextType, entryCount, err)
+			logger.Error("Failed to read key token", "context", contextType, "error", err)
+			return fmt.Errorf("failed to read key token for %s: %w", contextType, err)
 		}
 
 		key, ok := token.(string)
 		if !ok {
-			logger.Error("Expected string key", "context", contextType, "entry", entryCount, "got", token)
-			return fmt.Errorf("expected string key for %s at entry %d, got %T", contextType, entryCount, token)
+			logger.Error("Expected string key", "context", contextType, "got", token)
+			return fmt.Errorf("expected string key for %s, got %T", contextType, token)
 		}
 
 		// Call handler with proper error context
 		if err = handler(key, decoder, logger); err != nil {
 			return err
 		}
-		entryCount++
 	}
 
 	// Expect closing brace
 	token, err = decoder.Token()
 	if err != nil {
-		logger.Error("Failed to read closing token", "context", contextType, "entries", entryCount, "error", err)
-		return fmt.Errorf("failed to read closing token for %s after %d entries: %w", contextType, entryCount, err)
+		logger.Error("Failed to read closing token", "context", contextType, "error", err)
+		return fmt.Errorf("failed to read closing token for %s: %w", contextType, err)
 	}
 	if delim, ok := token.(json.Delim); !ok || delim != '}' {
-		logger.Error("Expected closing brace", "context", contextType, "entries", entryCount, "got", token)
-		return fmt.Errorf("expected '}' for %s after %d entries, got %v", contextType, entryCount, token)
+		logger.Error("Expected closing brace", "context", contextType, "got", token)
+		return fmt.Errorf("expected '}' for %s, got %v", contextType, token)
 	}
 
-	// logger.Info("Completed JSON object parsing", "context", contextType, "totalEntries", entryCount)
 	return nil
 }
