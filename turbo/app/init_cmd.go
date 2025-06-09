@@ -188,11 +188,11 @@ func parseGenesisStreaming(r io.Reader, genesis *types.Genesis, logger log.Logge
 			if err != nil {
 				return fmt.Errorf("failed to decode timestamp: %w", err)
 			}
-			timestamp, ok := token.(string)
+			timestamp, ok := token.(float64)
 			if !ok {
 				return fmt.Errorf("expected string for timestamp, got %T", token)
 			}
-			genesis.Timestamp = math.MustParseUint64(timestamp)
+			genesis.Timestamp = uint64(timestamp)
 
 		case "extraData":
 			token, err := decoder.Token()
