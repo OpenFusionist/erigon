@@ -18,6 +18,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -25,7 +26,10 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"github.com/erigontech/erigon-lib/chain"
+	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/datadir"
+	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon-lib/types"
@@ -57,6 +61,88 @@ participating.
 It expects the genesis file as argument.`,
 }
 
+type genesisRaw struct {
+	Config     json.RawMessage `json:"config"`
+	Nonce      string          `json:"nonce"`
+	Timestamp  float64         `json:"timestamp"`
+	ExtraData  string          `json:"extraData"`
+	GasLimit   string          `json:"gasLimit"`
+	Difficulty string          `json:"difficulty"`
+	Mixhash    string          `json:"mixhash"`
+	Coinbase   string          `json:"coinbase"`
+	ParentHash string          `json:"parentHash"`
+	Alloc      json.RawMessage `json:"alloc"`
+}
+
+type allocAccountRaw struct {
+	Balance     string          `json:"balance"`
+	Nonce       string          `json:"nonce"`
+	Code        string          `json:"code"`
+	Constructor string          `json:"constructor"`
+	Storage     json.RawMessage `json:"storage"`
+}
+
+func parseGenesisWithRawMessage(data []byte, logger log.Logger) (*types.Genesis, error) {
+	var raw genesisRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("initial shallow unmarshal failed: %w", err)
+	}
+
+	genesis := &types.Genesis{
+		Config: &chain.Config{},
+		Alloc:  make(types.GenesisAlloc),
+	}
+
+	genesis.Nonce = math.MustParseUint64(raw.Nonce)
+	genesis.Timestamp = uint64(raw.Timestamp)
+	genesis.ExtraData = common.FromHex(raw.ExtraData)
+	genesis.GasLimit = math.MustParseUint64(raw.GasLimit)
+	genesis.Difficulty = math.MustParseBig256(raw.Difficulty)
+	genesis.Mixhash = common.HexToHash(raw.Mixhash)
+	genesis.Coinbase = common.HexToAddress(raw.Coinbase)
+	genesis.ParentHash = common.HexToHash(raw.ParentHash)
+
+	if len(raw.Config) > 0 && string(raw.Config) != "null" {
+		if err := json.Unmarshal(raw.Config, genesis.Config); err != nil {
+			return nil, fmt.Errorf("unmarshal config failed: %w", err)
+		}
+	}
+
+	if len(raw.Alloc) > 0 && string(raw.Alloc) != "null" {
+		var allocMap map[string]allocAccountRaw
+		if err := json.Unmarshal(raw.Alloc, &allocMap); err != nil {
+			return nil, fmt.Errorf("unmarshal alloc map failed: %w", err)
+		}
+
+		for addrStr, accRaw := range allocMap {
+			addr := common.HexToAddress(addrStr)
+			account := types.GenesisAccount{
+				Balance:     math.MustParseBig256(accRaw.Balance),
+				Nonce:       math.MustParseUint64(accRaw.Nonce),
+				Code:        common.FromHex(accRaw.Code),
+				Constructor: common.FromHex(accRaw.Constructor),
+			}
+
+			if len(accRaw.Storage) > 0 && string(accRaw.Storage) != "null" {
+				var storageMap map[string]string
+				if err := json.Unmarshal(accRaw.Storage, &storageMap); err != nil {
+					return nil, fmt.Errorf("unmarshal storage for address %s failed: %w", addrStr, err)
+				}
+
+				if len(storageMap) > 0 {
+					account.Storage = make(map[common.Hash]common.Hash, len(storageMap))
+					for keyStr, valStr := range storageMap {
+						account.Storage[common.HexToHash(keyStr)] = common.HexToHash(valStr)
+					}
+				}
+			}
+			genesis.Alloc[addr] = account
+		}
+	}
+
+	return genesis, nil
+}
+
 // initGenesis will initialise the given JSON format genesis file and writes it as
 // the zero'd block (i.e. genesis) or will fail hard if it can't succeed.
 func initGenesis(cliCtx *cli.Context) error {
@@ -70,7 +156,7 @@ func initGenesis(cliCtx *cli.Context) error {
 
 	go func() {
 		logger.Info("Starting pprof on :6060")
-		http.ListenAndServe("localhost:6060", nil) // 本地访问，安全性较好
+		http.ListenAndServe("localhost:6060", nil)
 	}()
 	// Make sure we have a valid genesis JSON
 	genesisPath := cliCtx.Args().First()
@@ -78,16 +164,17 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("Must supply path to genesis JSON file")
 	}
 
-	file, err := os.Open(genesisPath)
+	data, err := os.ReadFile(genesisPath)
 	if err != nil {
 		utils.Fatalf("Failed to read genesis file: %v", err)
 	}
-	defer file.Close()
 
-	genesis := new(types.Genesis)
-	if err := json.NewDecoder(file).Decode(genesis); err != nil {
+	// Use optimized parsing instead of standard json.Decode
+	genesis, err := parseGenesisWithRawMessage(data, logger)
+	if err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
+
 	logger.Info("after parseGenesisStreaming,GC")
 	runtime.GC()
 	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
