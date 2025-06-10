@@ -60,7 +60,6 @@ It expects the genesis file as argument.`,
 // initGenesis will initialise the given JSON format genesis file and writes it as
 // the zero'd block (i.e. genesis) or will fail hard if it can't succeed.
 func initGenesis(cliCtx *cli.Context) error {
-	runtime.MemProfileRate = 64 // default is 512, change to 64 to sample more frequently
 
 	var logger log.Logger
 	var tracer *tracers.Tracer
@@ -89,6 +88,8 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err := json.NewDecoder(file).Decode(genesis); err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
+	logger.Info("after parseGenesisStreaming,GC")
+	runtime.GC()
 	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
 		pprof.Lookup("allocs").WriteTo(allocFile, 0)
 		allocFile.Close()
