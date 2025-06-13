@@ -17,12 +17,14 @@
 package app
 
 import (
-	"encoding/json"
+	"io"
 	"os"
 	"runtime"
 	"runtime/pprof"
-	"time"
 
+	"github.com/erigontech/erigon-lib/chain"
+	"github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/urfave/cli/v2"
 
 	"github.com/erigontech/erigon-lib/common/datadir"
@@ -37,7 +39,13 @@ import (
 
 	"net/http"
 	_ "net/http/pprof"
+
+	jsoniter "github.com/json-iterator/go"
 )
+
+// jsoniterAPI provides a high-performance, drop-in replacement for encoding/json
+// with streaming capabilities used below to efficiently decode large genesis files.
+var jsoniterAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
 var initCommand = cli.Command{
 	Action:    MigrateFlags(initGenesis),
@@ -84,10 +92,72 @@ func initGenesis(cliCtx *cli.Context) error {
 	}
 	defer file.Close()
 
-	genesis := new(types.Genesis)
-	if err := json.NewDecoder(file).Decode(genesis); err != nil {
-		utils.Fatalf("invalid genesis file: %v", err)
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		utils.Fatalf("Failed to read genesis file: %v", err)
 	}
+
+	genesis := new(types.Genesis)
+	iter := jsoniterAPI.BorrowIterator(fileBytes)
+	defer jsoniterAPI.ReturnIterator(iter)
+
+	// Stream parse the genesis JSON object
+	for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
+		switch field {
+		case "config":
+			genesis.Config = new(chain.Config)
+			iter.ReadVal(genesis.Config)
+		case "nonce":
+			genesis.Nonce = math.MustParseUint64(iter.ReadString())
+		case "timestamp":
+			genesis.Timestamp = math.MustParseUint64(iter.ReadString())
+		case "extraData":
+			genesis.ExtraData = common.FromHex(iter.ReadString())
+		case "gasLimit":
+			genesis.GasLimit = math.MustParseUint64(iter.ReadString())
+		case "difficulty":
+			genesis.Difficulty = math.MustParseBig256(iter.ReadString())
+		case "mixhash":
+			genesis.Mixhash = common.HexToHash(iter.ReadString())
+		case "coinbase":
+			genesis.Coinbase = common.HexToAddress(iter.ReadString())
+		case "alloc":
+			// For alloc, we need to parse it as a map to avoid loading everything into memory at once
+			genesis.Alloc = make(types.GenesisAlloc)
+			for addr := iter.ReadObject(); addr != ""; addr = iter.ReadObject() {
+				address := common.HexToAddress(addr)
+				account := types.GenesisAccount{}
+
+				// Parse account fields
+				for accountField := iter.ReadObject(); accountField != ""; accountField = iter.ReadObject() {
+					switch accountField {
+					case "balance":
+						account.Balance = math.MustParseBig256(iter.ReadString())
+					case "nonce":
+						account.Nonce = math.MustParseUint64(iter.ReadString())
+					case "code":
+						account.Code = common.FromHex(iter.ReadString())
+					case "storage":
+						account.Storage = make(map[common.Hash]common.Hash)
+						for storageKey := iter.ReadObject(); storageKey != ""; storageKey = iter.ReadObject() {
+							storageValue := iter.ReadString()
+							account.Storage[common.HexToHash(storageKey)] = common.HexToHash(storageValue)
+						}
+					default:
+						iter.Skip()
+					}
+				}
+				genesis.Alloc[address] = account
+			}
+		default:
+			iter.Skip()
+		}
+	}
+
+	if iter.Error != nil {
+		utils.Fatalf("invalid genesis file: %v", iter.Error)
+	}
+
 	logger.Info("after parseGenesisStreaming,GC")
 	runtime.GC()
 	if allocFile, err := os.Create("initgenesis_alloc_final.prof"); err == nil {
@@ -96,7 +166,6 @@ func initGenesis(cliCtx *cli.Context) error {
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
 	// DEBUG: just test json decode to save time
-	time.Sleep(5 * time.Minute)
 	return nil
 
 	// Open and initialise both full and light databases
