@@ -17,7 +17,7 @@
 package app
 
 import (
-	"io"
+	"bufio"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -92,14 +92,11 @@ func initGenesis(cliCtx *cli.Context) error {
 	}
 	defer file.Close()
 
-	fileBytes, err := io.ReadAll(file)
-	if err != nil {
-		utils.Fatalf("Failed to read genesis file: %v", err)
-	}
+	reader := bufio.NewReader(file)
+	iter := jsoniter.Parse(jsoniterAPI, reader, 4096)
+	defer jsoniterAPI.ReturnIterator(iter)
 
 	genesis := new(types.Genesis)
-	iter := jsoniterAPI.BorrowIterator(fileBytes)
-	defer jsoniterAPI.ReturnIterator(iter)
 
 	// Stream parse the genesis JSON object
 	for field := iter.ReadObject(); field != ""; field = iter.ReadObject() {
