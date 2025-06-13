@@ -121,6 +121,9 @@ func initGenesis(cliCtx *cli.Context) error {
 		case "alloc":
 			// For alloc, we need to parse it as a map to avoid loading everything into memory at once
 			genesis.Alloc = make(types.GenesisAlloc)
+			var storageKey string
+			var storageValue []byte
+
 			for addr := iter.ReadObject(); addr != ""; addr = iter.ReadObject() {
 				address := common.HexToAddress(addr)
 				account := types.GenesisAccount{}
@@ -136,9 +139,9 @@ func initGenesis(cliCtx *cli.Context) error {
 						account.Code = common.FromHex(iter.ReadString())
 					case "storage":
 						account.Storage = make(map[common.Hash]common.Hash)
-						for storageKey := iter.ReadObject(); storageKey != ""; storageKey = iter.ReadObject() {
-							storageValue := iter.ReadString()
-							account.Storage[common.HexToHash(storageKey)] = common.HexToHash(storageValue)
+						for storageKey = iter.ReadObject(); storageKey != ""; storageKey = iter.ReadObject() {
+							storageValue = iter.ReadStringAsSlice()
+							account.Storage[common.HexToHash(storageKey)] = common.CastToHash(storageValue)
 						}
 					default:
 						iter.Skip()
