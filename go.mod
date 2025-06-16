@@ -4,6 +4,8 @@ go 1.23.0
 
 toolchain go1.23.6
 
+replace github.com/json-iterator/go => github.com/ohko4711/json-iterator-go v0.0.0-20250616082103-6cfff71d02f8
+
 replace (
 	github.com/erigontech/erigon-db => ./erigon-db
 	github.com/erigontech/erigon-lib => ./erigon-lib

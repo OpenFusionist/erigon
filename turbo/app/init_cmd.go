@@ -121,7 +121,6 @@ func initGenesis(cliCtx *cli.Context) error {
 		case "alloc":
 			// For alloc, we need to parse it as a map to avoid loading everything into memory at once
 			genesis.Alloc = make(types.GenesisAlloc)
-			var storageKey string
 			var storageValue []byte
 
 			for addr := iter.ReadObject(); addr != ""; addr = iter.ReadObject() {
@@ -139,10 +138,11 @@ func initGenesis(cliCtx *cli.Context) error {
 						account.Code = common.FromHex(iter.ReadString())
 					case "storage":
 						account.Storage = make(map[common.Hash]common.Hash)
-						for storageKey = iter.ReadObject(); storageKey != ""; storageKey = iter.ReadObject() {
+						iter.ReadObjectCBWithoutCopy(func(iter *jsoniter.Iterator, keyBytes []byte) bool {
 							storageValue = iter.ReadStringAsSlice()
-							account.Storage[common.HexToHash(storageKey)] = common.CastToHash(storageValue)
-						}
+							account.Storage[common.HexToHash(string(keyBytes))] = common.HexToHash(string(storageValue))
+							return true
+						})
 					default:
 						iter.Skip()
 					}
@@ -166,7 +166,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
 	// DEBUG: just test json decode to save time
-	return nil
+	// return nil
 
 	// Open and initialise both full and light databases
 	stack, err := MakeNodeWithDefaultConfig(cliCtx, logger)
