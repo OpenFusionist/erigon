@@ -21,6 +21,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"unsafe"
 
 	"github.com/erigontech/erigon-lib/chain"
 	"github.com/erigontech/erigon-lib/common"
@@ -141,7 +142,9 @@ func initGenesis(cliCtx *cli.Context) error {
 						account.Storage = make(map[common.Hash]common.Hash)
 						for storageKey = iter.ReadObject(); storageKey != ""; storageKey = iter.ReadObject() {
 							storageValue = iter.ReadStringAsSlice()
-							account.Storage[common.HexToHash(storageKey)] = common.CastToHash(storageValue)
+							// unsafe []byte to string
+							ss := unsafe.String((*byte)(unsafe.Pointer(&storageValue[0])), len(storageValue))
+							account.Storage[common.HexToHash(storageKey)] = common.HexToHash(ss)
 						}
 					default:
 						iter.Skip()
@@ -166,7 +169,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
 	// DEBUG: just test json decode to save time
-	return nil
+	// return nil
 
 	// Open and initialise both full and light databases
 	stack, err := MakeNodeWithDefaultConfig(cliCtx, logger)
