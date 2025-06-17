@@ -122,7 +122,6 @@ func initGenesis(cliCtx *cli.Context) error {
 		case "alloc":
 			// For alloc, we need to parse it as a map to avoid loading everything into memory at once
 			genesis.Alloc = make(types.GenesisAlloc)
-			var storageValue []byte
 
 			for addr := iter.ReadObject(); addr != ""; addr = iter.ReadObject() {
 				address := common.HexToAddress(addr)
@@ -140,11 +139,12 @@ func initGenesis(cliCtx *cli.Context) error {
 					case "storage":
 						account.Storage = make(map[common.Hash]common.Hash)
 						iter.ReadObjectCBWithoutCopy(func(iter *jsoniter.Iterator, keyBytes []byte) bool {
-							storageValue = iter.ReadStringAsSlice()
 							// unsafe []byte to string to avoid extra memory allocation
-							key := unsafe.String((*byte)(unsafe.Pointer(&keyBytes[0])), len(keyBytes))
-							ss := unsafe.String((*byte)(unsafe.Pointer(&storageValue[0])), len(storageValue))
-							account.Storage[common.HexToHash(key)] = common.HexToHash(ss)
+							// must be done before ReadStringAsSlice for iter.ReadStringAsSlice may change the buffer
+							kHash := common.HexToHash(unsafe.String(&keyBytes[0], len(keyBytes)))
+							valBytes := iter.ReadStringAsSlice()
+							vHash := common.HexToHash(unsafe.String(&valBytes[0], len(valBytes)))
+							account.Storage[kHash] = vHash
 							return true
 						})
 					default:
@@ -170,7 +170,7 @@ func initGenesis(cliCtx *cli.Context) error {
 		logger.Info("Allocation profile saved", "stage", "final", "file", "initgenesis_alloc_final.prof")
 	}
 	// DEBUG: just test json decode to save time
-	return nil
+	// return nil
 
 	// Open and initialise both full and light databases
 	stack, err := MakeNodeWithDefaultConfig(cliCtx, logger)
